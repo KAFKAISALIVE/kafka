@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>화장실 별점 지도</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Pretendard", "Noto Sans KR", sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #f5f7fb;
+        color: #0f172a;
+      }
+
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(320px, 420px) 1fr;
+        min-height: 100vh;
+      }
+
+      .panel {
+        background: #fff;
+        border-right: 1px solid #e2e8f0;
+        padding: 20px;
+        overflow-y: auto;
+      }
+
+      h1 {
+        font-size: 1.4rem;
+        margin: 0 0 8px;
+      }
+
+      p.desc {
+        margin: 0 0 16px;
+        color: #475569;
+        font-size: 0.95rem;
+      }
+
+      form {
+        display: grid;
+        gap: 10px;
+        margin-bottom: 20px;
+      }
+
+      label {
+        font-weight: 600;
+        font-size: 0.9rem;
+      }
+
+      input,
+      textarea,
+      select,
+      button {
+        font: inherit;
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 10px 12px;
+      }
+
+      textarea {
+        resize: vertical;
+        min-height: 70px;
+      }
+
+      button {
+        border: 0;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #1d4ed8;
+      }
+
+      #map {
+        height: 100vh;
+      }
+
+      .reviews {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 12px;
+      }
+
+      .review-item {
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 12px;
+        background: #f8fafc;
+      }
+
+      .review-item h3 {
+        margin: 0 0 6px;
+        font-size: 1rem;
+      }
+
+      .meta {
+        font-size: 0.85rem;
+        color: #64748b;
+      }
+
+      @media (max-width: 960px) {
+        .layout {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto 60vh;
+        }
+
+        .panel {
+          border-right: 0;
+          border-bottom: 1px solid #e2e8f0;
+        }
+
+        #map {
+          height: 60vh;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="layout">
+      <section class="panel">
+        <h1>🚻 화장실 평가 지도</h1>
+        <p class="desc">지도에서 위치를 클릭한 뒤 별점과 후기를 등록하세요.</p>
+
+        <form id="review-form">
+          <div>
+            <label for="place">화장실 이름</label>
+            <input id="place" name="place" placeholder="예: 강남역 2번 출구" required />
+          </div>
+
+          <div>
+            <label for="rating">별점</label>
+            <select id="rating" name="rating" required>
+              <option value="5">★★★★★ (5)</option>
+              <option value="4">★★★★☆ (4)</option>
+              <option value="3">★★★☆☆ (3)</option>
+              <option value="2">★★☆☆☆ (2)</option>
+              <option value="1">★☆☆☆☆ (1)</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="comment">후기</label>
+            <textarea id="comment" name="comment" placeholder="청결도, 휴지 상태, 냄새 등을 남겨주세요." required></textarea>
+          </div>
+
+          <div>
+            <label for="coords">선택된 좌표</label>
+            <input id="coords" name="coords" readonly placeholder="지도에서 클릭하세요" />
+          </div>
+
+          <button type="submit">리뷰 등록</button>
+        </form>
+
+        <ul id="review-list" class="reviews" aria-live="polite"></ul>
+      </section>
+
+      <section id="map" aria-label="화장실 지도"></section>
+    </main>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script>
+      const STORAGE_KEY = "toilet-reviews";
+      const form = document.getElementById("review-form");
+      const coordsInput = document.getElementById("coords");
+      const listEl = document.getElementById("review-list");
+
+      const map = L.map("map").setView([37.5665, 126.978], 12);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      }).addTo(map);
+
+      let selectedCoords = null;
+      let tempMarker = null;
+      const reviews = loadReviews();
+
+      function renderReviewCard(review) {
+        const stars = "★".repeat(review.rating) + "☆".repeat(5 - review.rating);
+        return `
+          <li class="review-item">
+            <h3>${review.place}</h3>
+            <div>${stars}</div>
+            <p>${review.comment}</p>
+            <div class="meta">${review.lat.toFixed(5)}, ${review.lng.toFixed(5)} · ${new Date(
+          review.createdAt
+        ).toLocaleString("ko-KR")}</div>
+          </li>
+        `;
+      }
+
+      function renderList() {
+        if (!reviews.length) {
+          listEl.innerHTML = '<li class="review-item">아직 등록된 리뷰가 없습니다.</li>';
+          return;
+        }
+
+        const sorted = [...reviews].sort((a, b) => b.createdAt - a.createdAt);
+        listEl.innerHTML = sorted.map(renderReviewCard).join("");
+      }
+
+      function addMarker(review) {
+        const popup = `
+          <strong>${review.place}</strong><br/>
+          별점: ${"★".repeat(review.rating)}${"☆".repeat(5 - review.rating)}<br/>
+          ${review.comment}
+        `;
+        L.marker([review.lat, review.lng]).addTo(map).bindPopup(popup);
+      }
+
+      function loadReviews() {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return [];
+
+        try {
+          const parsed = JSON.parse(raw);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      }
+
+      function saveReviews() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(reviews));
+      }
+
+      map.on("click", (event) => {
+        selectedCoords = event.latlng;
+        coordsInput.value = `${selectedCoords.lat.toFixed(5)}, ${selectedCoords.lng.toFixed(5)}`;
+
+        if (tempMarker) {
+          tempMarker.setLatLng(selectedCoords);
+        } else {
+          tempMarker = L.marker(selectedCoords, { opacity: 0.75 }).addTo(map);
+        }
+      });
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+
+        if (!selectedCoords) {
+          alert("먼저 지도에서 화장실 위치를 선택해주세요.");
+          return;
+        }
+
+        const data = new FormData(form);
+        const review = {
+          place: data.get("place").toString().trim(),
+          rating: Number(data.get("rating")),
+          comment: data.get("comment").toString().trim(),
+          lat: selectedCoords.lat,
+          lng: selectedCoords.lng,
+          createdAt: Date.now(),
+        };
+
+        reviews.push(review);
+        saveReviews();
+        addMarker(review);
+        renderList();
+        form.reset();
+        coordsInput.value = `${selectedCoords.lat.toFixed(5)}, ${selectedCoords.lng.toFixed(5)}`;
+      });
+
+      reviews.forEach(addMarker);
+      renderList();
+    </script>
+  </body>
+</html>
